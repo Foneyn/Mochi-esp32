@@ -1,0 +1,24 @@
+name: Build Mochi ESP32 firmware
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: platformio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
+          restore-keys: platformio-${{ runner.os }}-
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install platformio
+      - run: pio run
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mochi-esp32-firmware
+          path: .pio/build/esp32dev/firmware.bin
