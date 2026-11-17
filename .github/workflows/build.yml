@@ -1,24 +1,50 @@
 name: Build Mochi ESP32 firmware
+
 on:
   workflow_dispatch:
   push:
     branches: [ main, master ]
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/cache@v4
         with:
           path: ~/.platformio
           key: platformio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
           restore-keys: platformio-${{ runner.os }}-
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - run: pip install platformio
-      - run: pio run
-      - uses: actions/upload-artifact@v4
+
+      - name: Install PlatformIO
+        run: pip install platformio esptool
+
+      - name: Build firmware
+        run: pio run
+
+      - name: Create merged image for ESP Web Tools
+        run: |
+          BUILD_DIR=".pio/build/esp32dev"
+          BOOT_APP0="$(find "$HOME/.platformio/packages/framework-arduinoespressif32" -name boot_app0.bin -print -quit)"
+          test -f "$BUILD_DIR/bootloader.bin"
+          test -f "$BUILD_DIR/partitions.bin"
+          test -f "$BUILD_DIR/firmware.bin"
+          test -n "$BOOT_APP0"
+          python -m esptool --chip esp32 merge_bin \
+            -o "$BUILD_DIR/mochi-esp32-merged.bin" \
+            --flash_mode dio --flash_size 4MB \
+            0x1000 "$BUILD_DIR/bootloader.bin" \
+            0x8000 "$BUILD_DIR/partitions.bin" \
+            0xe000 "$BOOT_APP0" \
+            0x10000 "$BUILD_DIR/firmware.bin"
+
+      - name: Upload merged firmware
+        uses: actions/upload-artifact@v4
         with:
-          name: mochi-esp32-firmware
-          path: .pio/build/esp32dev/firmware.bin
+          name: mochi-esp32-web-flasher
+          path: .pio/build/esp32dev/mochi-esp32-merged.bin
