@@ -15,10 +15,14 @@ Adafruit_SSD1306 display(W, H, &Wire, -1);
 
 enum Emotion : uint8_t { NEUTRAL, HAPPY, DELIGHTED, SURPRISED, ANGRY, SAD, SLEEPY, CURIOUS, SCARED };
 Emotion requestedEmotion = NEUTRAL;
-bool mpuPresent=false, waking=true, shakeRecovery=false;
+bool mpuPresent=false, waking=true, shakeRecovery=false, manualEmotion=false;
 uint32_t bootAt=0, lastFrame=0, lastMpu=0, emotionUntil=0, recoveryUntil=0, nextBlink=0, blinkEnd=0, nextIdle=0;
 uint32_t nextLook=0, gazeUntil=0, lastMoodUpdate=0;
 float prevAx=0,prevAy=0,prevAz=0, gazeX=0,gazeY=0;
+float filtAx=0, filtAy=0, filtAz=1;
+bool tiltActive=false;
+uint32_t shakeCooldown=0, lastShakePeak=0;
+uint8_t shakePeaks=0;
 float gazeTargetX=0, gazeTargetY=0;
 int mood=60; // 0 = gloomy, 100 = delighted
 
@@ -179,27 +183,68 @@ void initMPU(){
   if(mpuPresent){
     delay(25);
     prevAx=mpuWord(0x3B)/16384.0f;prevAy=mpuWord(0x3D)/16384.0f;prevAz=mpuWord(0x3F)/16384.0f;
+    filtAx=prevAx;filtAy=prevAy;filtAz=prevAz;
   }
   Serial.println(mpuPresent?"MPU6050 detected":"MPU6050 not detected; OLED mode");
 }
+void triggerShakeReaction(){
+  uint32_t now=millis();
+  shakePeaks=0;
+  setEmotion(SCARED,1000);
+  mood=max(0,mood-12);
+  shakeRecovery=true;
+  recoveryUntil=now+1000;
+  shakeCooldown=now+2600;
+  // Brief startled gaze; normal tilt tracking resumes after the reaction.
+  gazeTargetX=0; gazeTargetY=-3;
+  Serial.println("Mochi: shake detected! startled -> recovery");
+}
+
 void updateMotion(){
   uint32_t now=millis();
-  if(!mpuPresent||now-lastMpu<35)return;
+  if(!mpuPresent||now-lastMpu<25)return;
   lastMpu=now;
-  float ax=mpuWord(0x3B)/16384.0f, ay=mpuWord(0x3D)/16384.0f, az=mpuWord(0x3F)/16384.0f;
+  float ax=mpuWord(0x3B)/16384.0f;
+  float ay=mpuWord(0x3D)/16384.0f;
+  float az=mpuWord(0x3F)/16384.0f;
+
+  // Low-pass gravity estimate: tilt is measured from orientation, not sudden
+  // acceleration. This prevents a static tilt from being mistaken for sadness.
+  filtAx=0.82f*filtAx+0.18f*ax;
+  filtAy=0.82f*filtAy+0.18f*ay;
+  filtAz=0.82f*filtAz+0.18f*az;
+
+  // Shake detection uses rapid acceleration changes (high-pass/jerk),
+  // not the gravity estimate used for tilt. Require repeated peaks so a
+  // single tilt or putting the robot down does not count as shaking.
   float delta=fabsf(ax-prevAx)+fabsf(ay-prevAy)+fabsf(az-prevAz);
-  prevAx=ax;prevAy=ay;prevAz=az;
-  if(delta>0.85f&&!shakeRecovery){
-    setEmotion(SCARED,1500);mood=max(0,mood-12);
-    shakeRecovery=true;recoveryUntil=now+1500;return;
+  float accelMagnitude=sqrtf(ax*ax+ay*ay+az*az);
+  prevAx=ax; prevAy=ay; prevAz=az;
+  bool shakePeak = (delta > 0.62f) &&
+                   (fabsf(accelMagnitude-1.0f) > 0.18f || delta > 0.95f);
+  if(shakePeak && reached(now,shakeCooldown) && !shakeRecovery){
+    if(now-lastShakePeak > 700) shakePeaks=0;
+    lastShakePeak=now;
+    if(shakePeaks < 3) shakePeaks++;
+    if(shakePeaks >= 2){
+      triggerShakeReaction();
+    }
   }
-  if(!shakeRecovery){
-    if(ax>0.55f){gazeTargetX=6;gazeTargetY=0;gazeUntil=now+900;setEmotion(CURIOUS,650);}
-    else if(ax< -0.55f){gazeTargetX=-6;gazeTargetY=0;gazeUntil=now+900;setEmotion(CURIOUS,650);}
-    if(ay>0.60f){gazeTargetY=3;gazeUntil=now+900;}
-    if(reached(now,gazeUntil)){gazeTargetX=0;gazeTargetY=0;}
-  }
+
+  // Tilting only moves the pupils/eyes. It never changes the emotion.
+  // Axis mapping preserves the previous X-axis convention, with stronger
+  // travel and a small dead zone to avoid jitter around the centre.
+  float tx=filtAx;
+  float ty=filtAy;
+  if(fabsf(tx)<0.12f)tx=0;
+  if(fabsf(ty)<0.14f)ty=0;
+  float gx=constrain(tx*19.0f,-13.0f,13.0f);
+  float gy=constrain(-ty*15.0f,-9.0f,9.0f);
+  gazeTargetX=gx;
+  gazeTargetY=gy;
+  tiltActive=(fabsf(tx)>0.12f || fabsf(ty)>0.14f);
 }
+
 void updateCharacter(){
   uint32_t now=millis();
   if(shakeRecovery&&reached(now,recoveryUntil)){
@@ -214,10 +259,10 @@ void updateCharacter(){
   }
 
   // Natural eye movement: glance left/right/up, pause, then return to center.
-  if(reached(now,nextLook)&&!shakeRecovery&&reached(now,gazeUntil)){
+  if(reached(now,nextLook)&&!shakeRecovery&&!tiltActive&&reached(now,gazeUntil)){
     int glance=random(0,6);
-    if(glance==0){gazeTargetX=-7;gazeTargetY=0;}
-    else if(glance==1){gazeTargetX=7;gazeTargetY=0;}
+    if(glance==0){gazeTargetX=-11;gazeTargetY=0;}
+    else if(glance==1){gazeTargetX=11;gazeTargetY=0;}
     else if(glance==2){gazeTargetX=0;gazeTargetY=-3;}
     else if(glance==3){gazeTargetX=0;gazeTargetY=2;}
     else {gazeTargetX=0;gazeTargetY=0;}
@@ -225,14 +270,14 @@ void updateCharacter(){
     nextLook=now+random(1700,3600);
   }
   if(reached(now,gazeUntil)){gazeTargetX=0;gazeTargetY=0;}
-  gazeX=smooth(gazeX,gazeTargetX,0.16f);
-  gazeY=smooth(gazeY,gazeTargetY,0.16f);
+  gazeX=smooth(gazeX,gazeTargetX,0.24f);
+  gazeY=smooth(gazeY,gazeTargetY,0.24f);
 
   if(reached(now,nextBlink)){
     blinkEnd=now+110;
     nextBlink=now+random(2500,6500);
   }
-  if(!shakeRecovery&&!emotionUntil&&reached(now,nextIdle)){
+  if(!manualEmotion&&!shakeRecovery&&!emotionUntil&&reached(now,nextIdle)){
     int action=random(0,100);
     if(mood<30){
       if(action<45)setEmotion(SAD,1800);
@@ -251,26 +296,42 @@ void updateCharacter(){
     nextIdle=now+random(6500,12500);
   }
 }
+void printHelp(){
+  Serial.println("MOCHI TEST COMMANDS:");
+  Serial.println("1 angry | 2 sad | 3 surprised | 4 neutral | 5 happy | 6 star-eyes");
+  Serial.println("7 sleepy | 8 curious | 9 scared | a auto mode | + mood up | - mood down");
+  Serial.println("l/r/u/d/c gaze left/right/up/down/center | b blink | m mood value | ? help");
+  Serial.println("s simulate shake reaction (for testing)");
+}
 void serialCommands(){
-  if(!Serial.available())return;
-  char c=Serial.read();
-  switch(c){
-    case '0':setEmotion(NEUTRAL);break;
-    case '1':setEmotion(HAPPY);break;
-    case '2':setEmotion(ANGRY);break;
-    case '3':setEmotion(SURPRISED);break;
-    case '4':setEmotion(SLEEPY);break;
-    case '5':setEmotion(SAD);break;
-    case '6':setEmotion(DELIGHTED);break;
-    case '7':setEmotion(CURIOUS);break;
-    case '8':mood=min(100,mood+10);setEmotion(HAPPY,1800);break;
-    case '9':mood=max(0,mood-10);setEmotion(SAD,1800);break;
-    case 'b':blinkEnd=millis()+180;break;
-    case 'l':gazeTargetX=-7;gazeUntil=millis()+1200;break;
-    case 'r':gazeTargetX=7;gazeUntil=millis()+1200;break;
-    case 'c':gazeTargetX=0;gazeTargetY=0;gazeUntil=0;break;
+  while(Serial.available()){
+    char c=Serial.read();
+    switch(c){
+      case '1': manualEmotion=true;setEmotion(ANGRY);break;
+      case '2': manualEmotion=true;setEmotion(SAD);break;
+      case '3': manualEmotion=true;setEmotion(SURPRISED);break;
+      case '4': manualEmotion=true;setEmotion(NEUTRAL);break;
+      case '5': manualEmotion=true;setEmotion(HAPPY);break;
+      case '6': manualEmotion=true;setEmotion(DELIGHTED);break;
+      case '7': manualEmotion=true;setEmotion(SLEEPY);break;
+      case '8': manualEmotion=true;setEmotion(CURIOUS);break;
+      case '9': manualEmotion=true;setEmotion(SCARED);break;
+      case 'a': manualEmotion=false;emotionUntil=0;setEmotion(NEUTRAL);nextIdle=millis()+1500;break;
+      case '+': mood=min(100,mood+10);Serial.printf("mood=%d\n",mood);break;
+      case '-': mood=max(0,mood-10);Serial.printf("mood=%d\n",mood);break;
+      case 'm': Serial.printf("mood=%d/100\n",mood);break;
+      case 'b': blinkEnd=millis()+180;break;
+      case 's': triggerShakeReaction();break;
+      case 'l': gazeTargetX=-13;gazeTargetY=0;tiltActive=false;gazeUntil=millis()+1200;break;
+      case 'r': gazeTargetX=13;gazeTargetY=0;tiltActive=false;gazeUntil=millis()+1200;break;
+      case 'u': gazeTargetX=0;gazeTargetY=-9;tiltActive=false;gazeUntil=millis()+1200;break;
+      case 'd': gazeTargetX=0;gazeTargetY=9;tiltActive=false;gazeUntil=millis()+1200;break;
+      case 'c': gazeTargetX=0;gazeTargetY=0;tiltActive=false;gazeUntil=0;break;
+      case '?': printHelp();break;
+    }
   }
 }
+
 void setup(){
   Serial.begin(115200);randomSeed(esp_random());
   Wire.begin(PIN_SDA,PIN_SCL);Wire.setClock(100000);
@@ -280,7 +341,8 @@ void setup(){
   display.clearDisplay();display.display();
   initMPU();bootAt=millis();lastMoodUpdate=bootAt;
   nextLook=millis()+1800;
-  Serial.println("MOCHI 1.2 ready | 0 neutral,1 happy,2 angry,3 surprised,4 sleepy,5 sad,6 delighted,7 curious,8 mood+,9 mood-,b blink,l/r/c gaze");
+  printHelp();
+  Serial.println("Tilt controls gaze only; it does not select sad/happy emotions.");
 }
 void loop(){
   uint32_t now=millis();
