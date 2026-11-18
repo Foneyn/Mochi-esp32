@@ -19,16 +19,16 @@ Emotion requestedEmotion = NEUTRAL;
 bool mpuPresent=false, waking=true, shakeRecovery=false, manualEmotion=false;
 uint8_t recoveryStage=0; // 1 scared, 2 angry, 3 sad
 uint32_t bootAt=0, lastFrame=0, lastMpu=0, emotionUntil=0, recoveryUntil=0, nextBlink=0, blinkEnd=0, nextIdle=0;
-uint32_t nextLook=0, gazeUntil=0, lastMoodUpdate=0;
+uint32_t nextLook=0, gazeUntil=0, lastMoodUpdate=0, lastInteraction=0, sideSince=0, sleepStageAt=0, nextHappyMouth=0;
 float prevAx=0,prevAy=0,prevAz=0, gazeX=0,gazeY=0;
 float filtAx=0, filtAy=0, filtAz=1;
-bool tiltActive=false;
+bool tiltActive=false, sidePosition=false, sleeping=false, sleepSequence=false;
 uint32_t shakeCooldown=0, lastShakePeak=0;
 uint32_t buttonChangedAt=0;
 bool buttonStableHigh=true, buttonLastReadHigh=true;
 uint8_t shakePeaks=0;
 float gazeTargetX=0, gazeTargetY=0;
-int mood=60; // 0 = gloomy, 100 = delighted
+int mood=60; // 0 = gloomy, 100 = delighted\nuint8_t mouthStyle=0; // 0 auto/arc, 1 D, 2 P, 3 tiny 3, 4 O, 5 vertical line
 
 // Animated face parameters. Every emotion changes targets, never hard-cuts.
 struct Face {
@@ -47,34 +47,43 @@ void setEmotion(Emotion e,uint32_t duration=0){
 }
 void setTargets(){
   target={35,46,14,gazeX,gazeY,0,0};
+  mouthStyle=0;
   switch(requestedEmotion){
     case ANGRY:
-      // A strong inward brow: the inner upper corners are cut deeply and the eyes slope down inward.
-      target.eyeH=27; target.eyeY=19; target.tilt=5; target.smile=-1.0f;
+      target.eyeH=27; target.eyeY=19; target.tilt=5; target.smile=-0.9f;
       break;
     case SAD:
-      target.eyeH=29; target.eyeY=18; target.pupilY=gazeY+7; target.smile=-0.85f;
+      target.eyeH=29; target.eyeY=18; target.pupilY=gazeY+8; target.pupilX=gazeX-2; target.smile=-0.9f;
       break;
-    case SURPRISED: target.eyeH=46; target.eyeW=43; target.eyeY=7; break;
-    case NEUTRAL: break;
-    case HAPPY: target.eyeH=39; target.eyeY=12; target.smile=1; break;
-    case DELIGHTED: target.eyeH=42; target.eyeY=10; target.smile=1; break;
-    case AFFECTION: target.eyeH=45; target.eyeW=48; target.eyeY=8; target.smile=1.0f; break;
-    case SCARED: target.eyeH=43; target.eyeW=43; target.eyeY=9; break;
-    case SLEEPY: target.eyeH=15; target.eyeY=28; break;
-    case CURIOUS: target.eyeH=38; target.eyeY=12; target.tilt=2; break;
+    case SURPRISED:
+      target.eyeH=47; target.eyeW=44; target.eyeY=6; target.smile=0;
+      mouthStyle=4; break;
+    case NEUTRAL:
+      target.smile=0; mouthStyle=(random(0,100)<12)?5:0; break;
+    case HAPPY:
+      target.eyeH=41; target.eyeY=10; target.smile=0.9f;
+      mouthStyle=(random(0,2)==0)?0:1; break;
+    case DELIGHTED:
+      target.eyeH=48; target.eyeW=50; target.eyeY=4; target.smile=1;
+      mouthStyle=random(0,3)+1; break;
+    case AFFECTION:
+      target.eyeH=18; target.eyeW=48; target.eyeY=19; target.smile=1;
+      mouthStyle=(mouthStyle==2||mouthStyle==3)?mouthStyle:random(2,4); break;
+    case SCARED:
+      target.eyeH=46; target.eyeW=44; target.eyeY=6; target.smile=0;
+      mouthStyle=4; break;
+    case SLEEPY:
+      target.eyeH=12; target.eyeY=29; target.smile=0; break;
+    case CURIOUS:
+      target.eyeH=38; target.eyeY=12; target.tilt=2; break;
   }
-  // Mood affects the face continuously, not only the occasional idle emotion.
-  // Keep manually selected emotions recognizable while changing their intensity.
-  if(!shakeRecovery){
+  if(!shakeRecovery && requestedEmotion!=AFFECTION && requestedEmotion!=SCARED && requestedEmotion!=SURPRISED && requestedEmotion!=SLEEPY){
     float low=constrain((50.0f-mood)/50.0f,0.0f,1.0f);
     float high=constrain((mood-50.0f)/50.0f,0.0f,1.0f);
-    target.eyeY += low*5.0f - high*2.0f;
-    target.eyeH += high*3.0f - low*4.0f;
-    target.smile += high*0.85f - low*0.45f;
-    target.smile=constrain(target.smile,-1.0f,1.0f);
-    if(requestedEmotion==NEUTRAL && low>0.45f) target.smile=-0.45f;
-    if(requestedEmotion==NEUTRAL && high>0.45f) target.smile=0.45f;
+    target.eyeY += low*5.0f-high*2.0f;
+    target.eyeH += high*3.0f-low*4.0f;
+    if(requestedEmotion==NEUTRAL && mood<20) target.smile=-0.75f;
+    else if(requestedEmotion==NEUTRAL && mood>=80) {target.smile=0.85f; mouthStyle=random(0,3)+1;}
   }
 }
 void animateFace(){
@@ -161,6 +170,8 @@ void renderFace(){
   bool curious=(requestedEmotion==CURIOUS);
   bool scared=(requestedEmotion==SCARED);
   bool stars=(requestedEmotion==DELIGHTED);
+  bool affection=(requestedEmotion==AFFECTION);
+  bool sleepy=(requestedEmotion==SLEEPY || sleeping);
   int leftW=curious?min(56,ew+9):ew;
   int rightW=curious?max(29,ew-12):ew;
   int shakeX=scared?(int)(sinf(now*0.075f)*4.0f):0;
@@ -239,7 +250,7 @@ void triggerShakeReaction(){
   manualEmotion=false;
   recoveryStage=1;
   setEmotion(SCARED);
-  mood=max(0,mood-8);
+  mood=max(0,mood-10);\n  lastInteraction=now; sleeping=false; sleepSequence=false;
   shakeRecovery=true;
   recoveryUntil=now+1100;
   shakeCooldown=now+2800;
@@ -288,7 +299,11 @@ void updateMotion(){
   if(fabsf(ty)<0.14f)ty=0;
   float gx=constrain(tx*25.0f,-17.0f,17.0f);
   float gy=constrain(-ty*21.0f,-12.0f,12.0f);
-  tiltActive=(fabsf(tx)>0.12f || fabsf(ty)>0.14f);
+  tiltActive=(fabsf(tx)>0.07f || fabsf(ty)>0.07f);
+   // Detect laying on either side: gravity is mostly horizontal on X/Y.
+   bool nowSide = fabsf(filtAx)>0.72f || fabsf(filtAy)>0.72f;
+   if(nowSide){ if(!sidePosition) sideSince=now; sidePosition=true; }
+   else { sidePosition=false; sideSince=0; }
   // Only let the IMU take control while the device is actually tilted.
   // Otherwise autonomous glances and serial gaze tests remain in control.
   if(tiltActive){
@@ -343,13 +358,16 @@ void updateCharacter(){
     blinkEnd=now+110;
     nextBlink=now+random(2500,6500);
   }
+  if(mood>=80 && requestedEmotion==HAPPY && reached(now,nextHappyMouth)){
+    mouthStyle=random(1,4); nextHappyMouth=now+random(5000,12000);
+  }
   if(!manualEmotion&&!shakeRecovery&&!emotionUntil&&reached(now,nextIdle)){
     int action=random(0,100);
-    if(mood<30){
+    if(mood<20){
       if(action<45)setEmotion(SAD,1800);
       else if(action<75)setEmotion(SLEEPY,1800);
       else setEmotion(CURIOUS,1300);
-    } else if(mood>75){
+    } else if(mood>=80){
       if(action<40){setEmotion(HAPPY,1700);mood=min(100,mood+2);}
       else if(action<65){setEmotion(DELIGHTED,1600);mood=min(100,mood+3);}
       else setEmotion(CURIOUS,1300);
@@ -374,12 +392,15 @@ void updateButton(){
     buttonStableHigh = readingHigh;
     if(!buttonStableHigh){
       // A press triggers the dedicated affectionate blush expression.
-      mood = min(100, mood + 9);
+      bool wakingFromSleep=sleeping || sleepSequence;
+      mood = min(100, mood + 20);
+      lastInteraction = now; sleeping=false; sleepSequence=false;
       manualEmotion = false;
       shakeRecovery = false;
       recoveryStage = 0;
       emotionUntil = 0;
-      setEmotion(AFFECTION, 2400);
+      setEmotion(AFFECTION, 3200);
+      if(wakingFromSleep) Serial.println("Mochi: woke up to affection!");\n      mouthStyle = random(0,2) ? 2 : 3;
       nextIdle = now + 2200;
       Serial.printf("Mochi: affection button! mood=%d/100\\n", mood);
     }
