@@ -1,183 +1,287 @@
+\
 #include <Arduino.h>
 #include <Wire.h>
-#include <math.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
-#include "eyes.h"
+#include <math.h>
 
-// ESP32-WROOM-32 + OLED SSD1306 + MPU-6050 (GY-521)
-static constexpr int I2C_SDA = 21;
-static constexpr int I2C_SCL = 18;
-static constexpr uint8_t OLED_ADDR = 0x3C;
-static constexpr uint8_t MPU_ADDR = 0x68; // AD0 low; if AD0 high, address is 0x69
-static constexpr int W = 128, H = 64;
+// Mochi 1.0 — ESP32-WROOM-32
+// Inspiration: Plexynex Robot Face Emotion Expressions
+// Visual ideas are adapted for a small monochrome OLED.
 
-Adafruit_SSD1306 display(W, H, &Wire, -1);
-uint8_t frameBuffer[W * H / 8];
+constexpr int PIN_SDA = 21;
+constexpr int PIN_SCL = 18;
+constexpr uint8_t OLED_ADDR = 0x3C;
+constexpr uint8_t MPU_ADDR = 0x68;
+constexpr int WIDTH = 128;
+constexpr int HEIGHT = 64;
 
-enum Mood : uint8_t { NEUTRAL, HAPPY, ANGRY, SURPRISED, SLEEPY };
-Mood mood = NEUTRAL;
-float gazeX = 0, gazeY = 0, targetX = 0, targetY = 0;
-unsigned long nextBlink = 0, nextGlance = 0, lastDraw = 0;
-bool mpuReady = false;
-unsigned long lastMpuRead = 0, surpriseUntil = 0, lastShake = 0;
-float filteredRoll = 0, filteredPitch = 0;
+Adafruit_SSD1306 display(WIDTH, HEIGHT, &Wire, -1);
 
-bool mpuWrite(uint8_t reg, uint8_t value) {
-  Wire.beginTransmission(MPU_ADDR);
-  Wire.write(reg); Wire.write(value);
-  return Wire.endTransmission() == 0;
+enum Emotion : uint8_t {
+  NEUTRAL, HAPPY, DELIGHTED, SURPRISED, ANGRY,
+  SAD, SLEEPY, CURIOUS, SCARED
+};
+
+Emotion emotion = NEUTRAL;
+bool mpuPresent = false;
+bool waking = true;
+bool shakeRecovery = false;
+int mood = 60;
+int gazeX = 0;
+int gazeY = 0;
+
+uint32_t bootAt = 0;
+uint32_t nextBlinkAt = 0;
+uint32_t blinkUntil = 0;
+uint32_t emotionUntil = 0;
+uint32_t nextIdleAt = 0;
+uint32_t recoveryUntil = 0;
+uint32_t lastMpuRead = 0;
+float prevAx = 0, prevAy = 0, prevAz = 0;
+
+bool due(uint32_t now, uint32_t deadline) {
+  return (int32_t)(now - deadline) >= 0;
 }
 
-bool mpuReadBytes(uint8_t reg, uint8_t *data, size_t count) {
+void setEmotion(Emotion e, uint32_t duration = 0) {
+  emotion = e;
+  emotionUntil = duration ? millis() + duration : 0;
+}
+
+int16_t readMpuWord(uint8_t reg) {
   Wire.beginTransmission(MPU_ADDR);
   Wire.write(reg);
-  if (Wire.endTransmission(false) != 0) return false;
-  size_t got = Wire.requestFrom((int)MPU_ADDR, (int)count, (int)true);
-  if (got != count) return false;
-  for (size_t i = 0; i < count; ++i) data[i] = Wire.read();
-  return true;
+  if (Wire.endTransmission(false) != 0) return 0;
+  if (Wire.requestFrom(MPU_ADDR, (uint8_t)2) != 2) return 0;
+  return (int16_t)((Wire.read() << 8) | Wire.read());
 }
 
-bool initMPU() {
+void initMpu() {
   Wire.beginTransmission(MPU_ADDR);
-  if (Wire.endTransmission() != 0) return false;
-  // Wake up, use the X gyro as clock, and enable a modest low-pass filter.
-  if (!mpuWrite(0x6B, 0x01)) return false; // PWR_MGMT_1
-  mpuWrite(0x1A, 0x03); // DLPF ~44 Hz accel / 42 Hz gyro
-  mpuWrite(0x1B, 0x00); // gyro +/-250 deg/s
-  mpuWrite(0x1C, 0x00); // accel +/-2 g
-  delay(100);
-  return true;
+  Wire.write(0x6B);
+  Wire.write(0);
+  mpuPresent = (Wire.endTransmission() == 0);
+  if (mpuPresent) {
+    delay(30);
+    prevAx = readMpuWord(0x3B) / 16384.0f;
+    prevAy = readMpuWord(0x3D) / 16384.0f;
+    prevAz = readMpuWord(0x3F) / 16384.0f;
+  }
+  Serial.println(mpuPresent ? "MPU6050 found" : "MPU6050 not found; OLED-only mode");
 }
 
-int16_t readI16(const uint8_t *p) { return (int16_t)((uint16_t)p[0] << 8 | p[1]); }
+void drawEye(int x, int y, int w, int h, bool closed, bool angry) {
+  if (closed || h < 4) {
+    display.drawLine(x, y + h / 2, x + w, y + h / 2, SSD1306_WHITE);
+    return;
+  }
 
-void showBuffer() {
+  display.fillRoundRect(x, y, w, h, min(9, h / 2), SSD1306_WHITE);
+
+  int px = x + w / 2 + gazeX;
+  int py = y + h / 2 + gazeY;
+  display.fillCircle(px, py, min(5, h / 4), SSD1306_BLACK);
+  display.drawPixel(px - 2, py - 2, SSD1306_WHITE);
+
+  if (angry) {
+    // Eyebrow strokes are drawn separately by drawFace().
+  }
+}
+
+void drawStars() {
+  display.drawLine(39, 8, 39, 17, SSD1306_WHITE);
+  display.drawLine(35, 12, 43, 12, SSD1306_WHITE);
+  display.drawLine(91, 7, 91, 16, SSD1306_WHITE);
+  display.drawLine(87, 11, 95, 11, SSD1306_WHITE);
+}
+
+void drawSmile() {
+  display.drawLine(54, 51, 60, 55, SSD1306_WHITE);
+  display.drawLine(60, 55, 68, 55, SSD1306_WHITE);
+  display.drawLine(68, 55, 74, 51, SSD1306_WHITE);
+}
+
+void renderFace() {
   display.clearDisplay();
-  display.drawBitmap(0, 0, frameBuffer, W, H, SSD1306_WHITE);
+
+  const uint32_t now = millis();
+  const bool blinking = !due(now, blinkUntil);
+  int eyeH = 27;
+  if (emotion == SLEEPY) eyeH = 13;
+  if (emotion == SAD || emotion == ANGRY) eyeH = 21;
+  if (emotion == SURPRISED || emotion == SCARED) eyeH = 32;
+
+  if (emotion == DELIGHTED) drawStars();
+
+  bool closed = blinking;
+  drawEye(22, 18, 36, eyeH, closed, emotion == ANGRY);
+  drawEye(70, 18, 36, eyeH, closed, emotion == ANGRY);
+
+  if (emotion == ANGRY) {
+    display.drawLine(22, 14, 49, 20, SSD1306_WHITE);
+    display.drawLine(79, 20, 106, 14, SSD1306_WHITE);
+  } else if (emotion == SAD) {
+    display.drawLine(22, 15, 48, 20, SSD1306_WHITE);
+    display.drawLine(80, 20, 106, 15, SSD1306_WHITE);
+  }
+
+  if (emotion == HAPPY || emotion == DELIGHTED) drawSmile();
+
+  if (emotion == SCARED) {
+    display.drawFastHLine(5, 4, 10, SSD1306_WHITE);
+    display.drawFastHLine(113, 4, 10, SSD1306_WHITE);
+  }
+
   display.display();
 }
 
-void renderMood() {
-  switch (mood) {
-    case HAPPY:     Eyes::draw_open(gazeY, gazeX, 0.0f, 0.20f, 3.0f, frameBuffer); break;
-    case ANGRY:     Eyes::draw_open(gazeY, gazeX, 0.75f, 0.55f, -9.0f, frameBuffer); break;
-    case SURPRISED: Eyes::draw_open(gazeY, gazeX, 0.0f, 0.95f, 9.0f, frameBuffer); break;
-    case SLEEPY:    Eyes::draw_half_open(frameBuffer); break;
-    default:        Eyes::draw_open(gazeY, gazeX, 0.0f, 0.30f, 0.0f, frameBuffer); break;
+void glitchFrame() {
+  display.clearDisplay();
+  for (int i = 0; i < 15; ++i) {
+    int y = random(0, HEIGHT);
+    int x = random(0, WIDTH);
+    int w = random(5, 55);
+    display.drawFastHLine(x, y, min(w, WIDTH - x), SSD1306_WHITE);
   }
-  showBuffer();
+  if (random(0, 3) == 0) {
+    display.fillRect(random(0, 105), random(0, 57),
+                     random(4, 22), random(2, 7), SSD1306_WHITE);
+  }
+  display.display();
 }
 
-void blinkNow() {
-  Eyes::draw_closed(frameBuffer); showBuffer();
-  delay(110);
-  if (mood != SLEEPY && millis() >= surpriseUntil) renderMood();
-  nextBlink = millis() + random(2200, 5200);
+void startupAnimation() {
+  uint32_t t = millis() - bootAt;
+
+  if (t < 1000) {
+    glitchFrame();
+  } else if (t < 1450) {
+    display.clearDisplay();
+    display.display();
+  } else if (t < 2300) {
+    emotion = SLEEPY;
+    blinkUntil = 0;
+    renderFace();
+  } else if (t < 3300) {
+    emotion = NEUTRAL;
+    renderFace();
+  } else {
+    waking = false;
+    emotion = NEUTRAL;
+    nextBlinkAt = millis() + random(2200, 5000);
+    nextIdleAt = millis() + 4500;
+  }
 }
 
-void printHelp() {
-  Serial.println(F("\nMochi + MPU6050 ready"));
-  Serial.println(F("0 neutral | 1 happy | 2 angry | 3 surprised | 4 sleepy"));
-  Serial.println(F("b blink | l left | r right | c center | ? help"));
-  Serial.println(F("Tilt Mochi to move its gaze; shake to surprise it."));
-  Serial.println(mpuReady ? F("MPU6050: detected at 0x68") : F("MPU6050: NOT detected; check wiring/address"));
+void updateMotion() {
+  uint32_t now = millis();
+  if (!mpuPresent || now - lastMpuRead < 40) return;
+  lastMpuRead = now;
+
+  float ax = readMpuWord(0x3B) / 16384.0f;
+  float ay = readMpuWord(0x3D) / 16384.0f;
+  float az = readMpuWord(0x3F) / 16384.0f;
+  float delta = fabsf(ax - prevAx) + fabsf(ay - prevAy) + fabsf(az - prevAz);
+  prevAx = ax; prevAy = ay; prevAz = az;
+
+  if (delta > 0.85f && !shakeRecovery) {
+    setEmotion(SCARED, 1500);
+    mood = max(0, mood - 8);
+    shakeRecovery = true;
+    recoveryUntil = now + 1500;
+    return;
+  }
+
+  // Gentle tilt: glance toward the tilt direction.
+  if (!shakeRecovery) {
+    if (ax > 0.55f) { gazeX = 5; setEmotion(CURIOUS, 650); }
+    else if (ax < -0.55f) { gazeX = -5; setEmotion(CURIOUS, 650); }
+    else if (ay > 0.60f) { gazeY = 3; }
+    else { gazeX = 0; gazeY = 0; }
+  }
+}
+
+void updateCharacter() {
+  uint32_t now = millis();
+
+  if (shakeRecovery && due(now, recoveryUntil)) {
+    shakeRecovery = false;
+    setEmotion(SAD, 3500);
+  }
+
+  if (emotionUntil && due(now, emotionUntil)) {
+    emotionUntil = 0;
+    emotion = NEUTRAL;
+  }
+
+  if (due(now, nextBlinkAt)) {
+    blinkUntil = now + 130;
+    nextBlinkAt = now + random(2500, 6500);
+  }
+
+  if (!shakeRecovery && !emotionUntil && due(now, nextIdleAt)) {
+    switch (random(0, 5)) {
+      case 0: setEmotion(CURIOUS, 1400); gazeX = random(-5, 6); break;
+      case 1: setEmotion(HAPPY, 1600); mood = min(100, mood + 2); break;
+      case 2: setEmotion(SLEEPY, 1800); break;
+      case 3: setEmotion(DELIGHTED, 1500); mood = min(100, mood + 3); break;
+      default: setEmotion(NEUTRAL, 1200); gazeX = 0; gazeY = 0; break;
+    }
+    nextIdleAt = now + random(7000, 14000);
+  }
 }
 
 void handleSerial() {
-  while (Serial.available()) {
-    char c = (char)Serial.read();
-    switch (c) {
-      case '0': mood = NEUTRAL; surpriseUntil = 0; renderMood(); Serial.println(F("neutral")); break;
-      case '1': mood = HAPPY; surpriseUntil = 0; renderMood(); Serial.println(F("happy")); break;
-      case '2': mood = ANGRY; surpriseUntil = 0; renderMood(); Serial.println(F("angry")); break;
-      case '3': mood = SURPRISED; surpriseUntil = 0; renderMood(); Serial.println(F("surprised")); break;
-      case '4': mood = SLEEPY; surpriseUntil = 0; renderMood(); Serial.println(F("sleepy")); break;
-      case 'b': case 'B': blinkNow(); break;
-      case 'l': case 'L': targetX = -0.75f; break;
-      case 'r': case 'R': targetX = 0.75f; break;
-      case 'c': case 'C': targetX = targetY = 0; break;
-      case '?': printHelp(); break;
-      default: break;
-    }
-  }
-}
-
-void updateMPU() {
-  if (!mpuReady || millis() - lastMpuRead < 25) return;
-  lastMpuRead = millis();
-  uint8_t raw[14];
-  if (!mpuReadBytes(0x3B, raw, sizeof(raw))) return;
-  int16_t ax = readI16(raw), ay = readI16(raw + 2), az = readI16(raw + 4);
-  int16_t gx = readI16(raw + 8), gy = readI16(raw + 10), gz = readI16(raw + 12);
-  float x = ax / 16384.0f, y = ay / 16384.0f, z = az / 16384.0f;
-  float roll = atan2f(y, z) * 57.29578f;
-  float pitch = atan2f(-x, sqrtf(y*y + z*z)) * 57.29578f;
-  filteredRoll = filteredRoll * 0.78f + roll * 0.22f;
-  filteredPitch = filteredPitch * 0.78f + pitch * 0.22f;
-
-  // Map tilt to eye direction. Dead zone prevents jitter while resting.
-  float tx = (fabsf(filteredRoll) < 7.0f) ? 0.0f : constrain(filteredRoll / 32.0f, -1.0f, 1.0f);
-  float ty = (fabsf(filteredPitch) < 8.0f) ? 0.0f : constrain(filteredPitch / 32.0f, -1.0f, 1.0f);
-  if (mood != SLEEPY) { targetX = tx; targetY = ty; }
-
-  float gyroMagnitude = sqrtf((float)gx*gx + (float)gy*gy + (float)gz*gz) / 131.0f;
-  float accelMagnitude = sqrtf(x*x + y*y + z*z);
-  bool shake = gyroMagnitude > 230.0f || fabsf(accelMagnitude - 1.0f) > 0.55f;
-  if (shake && millis() - lastShake > 1800 && mood != SLEEPY) {
-    lastShake = millis();
-    surpriseUntil = millis() + 900;
-    Eyes::draw_open(gazeY, gazeX, 0.0f, 0.95f, 9.0f, frameBuffer);
-    showBuffer();
-    Serial.println(F("Shake detected!"));
+  if (!Serial.available()) return;
+  char c = Serial.read();
+  switch (c) {
+    case '0': setEmotion(NEUTRAL); break;
+    case '1': setEmotion(HAPPY); break;
+    case '2': setEmotion(ANGRY); break;
+    case '3': setEmotion(SURPRISED); break;
+    case '4': setEmotion(SLEEPY); break;
+    case '5': setEmotion(SAD); break;
+    case '6': setEmotion(DELIGHTED); break;
+    case '7': setEmotion(CURIOUS); break;
+    case 'b': blinkUntil = millis() + 180; break;
+    case 'l': gazeX = -5; break;
+    case 'r': gazeX = 5; break;
+    case 'c': gazeX = 0; gazeY = 0; break;
   }
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(250);
-  randomSeed((uint32_t)micros());
-  Wire.begin(I2C_SDA, I2C_SCL);
+  randomSeed(esp_random());
+
+  Wire.begin(PIN_SDA, PIN_SCL);
   Wire.setClock(100000);
 
   if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-    Serial.println(F("OLED not found at 0x3C. Check display wiring."));
-    while (true) delay(1000);
+    Serial.println("OLED init failed. Check display driver/address.");
+    while (true) delay(100);
   }
-  display.clearDisplay(); display.display();
-  mpuReady = initMPU();
-  Eyes::draw_closed(frameBuffer); showBuffer(); delay(150);
-  renderMood();
-  nextBlink = millis() + random(1800, 4000);
-  nextGlance = millis() + random(1200, 3000);
-  printHelp();
+
+  display.clearDisplay();
+  display.display();
+  initMpu();
+
+  bootAt = millis();
+  Serial.println("Mochi 1.0 starting");
+  Serial.println("Serial: 0 neutral, 1 happy, 2 angry, 3 surprised,");
+  Serial.println("4 sleepy, 5 sad, 6 delighted, 7 curious, b blink, l/r/c gaze");
 }
 
 void loop() {
+  if (waking) {
+    startupAnimation();
+  } else {
+    updateMotion();
+    updateCharacter();
+    renderFace();
+  }
+
   handleSerial();
-  updateMPU();
-  unsigned long now = millis();
-  if (now - lastDraw >= 45) {
-    lastDraw = now;
-    gazeX += (targetX - gazeX) * 0.18f;
-    gazeY += (targetY - gazeY) * 0.18f;
-    if (mood != SLEEPY && now >= surpriseUntil) renderMood();
-    else if (mood == SLEEPY) renderMood();
-  }
-  if (mood != SLEEPY && now >= nextGlance && now >= surpriseUntil) {
-    // Small idle glances only when the sensor is close to level.
-    if (mpuReady && fabsf(filteredRoll) < 8 && fabsf(filteredPitch) < 8) {
-      int pick = random(4);
-      targetX = (pick == 0) ? -0.45f : (pick == 1) ? 0.45f : 0.0f;
-      targetY = (pick == 2) ? -0.25f : (pick == 3) ? 0.25f : 0.0f;
-    } else if (!mpuReady) {
-      int pick = random(4);
-      targetX = (pick == 0) ? -0.55f : (pick == 1) ? 0.55f : 0.0f;
-      targetY = (pick == 2) ? -0.30f : (pick == 3) ? 0.30f : 0.0f;
-    }
-    nextGlance = now + random(1800, 4200);
-  }
-  if (mood != SLEEPY && now >= nextBlink) blinkNow();
-  if (surpriseUntil && now >= surpriseUntil) { surpriseUntil = 0; renderMood(); }
+  delay(35);
 }
