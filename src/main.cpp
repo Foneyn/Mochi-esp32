@@ -44,20 +44,31 @@ void setTargets(){
   target={35,46,14,gazeX,gazeY,0,0};
   switch(requestedEmotion){
     case ANGRY:
-      // Anger: narrowed eyes with soft inward upper-corner cuts and a frown.
-      target.eyeH=25; target.eyeY=20; target.tilt=1; target.smile=-1;
+      // A strong inward brow: the inner upper corners are cut deeply and the eyes slope down inward.
+      target.eyeH=27; target.eyeY=19; target.tilt=5; target.smile=-1.0f;
       break;
     case SAD:
-      // Sadness: softly clipped outer upper corners, lowered pupils, tiny frown.
-      target.eyeH=29; target.eyeY=18; target.pupilY=gazeY+7; target.smile=-0.75f;
+      target.eyeH=29; target.eyeY=18; target.pupilY=gazeY+7; target.smile=-0.85f;
       break;
-    case SURPRISED: target.eyeH=45; target.eyeW=43; target.eyeY=8; break;
+    case SURPRISED: target.eyeH=46; target.eyeW=43; target.eyeY=7; break;
     case NEUTRAL: break;
     case HAPPY: target.eyeH=39; target.eyeY=12; target.smile=1; break;
     case DELIGHTED: target.eyeH=42; target.eyeY=10; target.smile=1; break;
-    case SCARED: target.eyeH=43; target.eyeW=43; target.eyeY=9; target.tilt=1; break;
+    case SCARED: target.eyeH=43; target.eyeW=43; target.eyeY=9; break;
     case SLEEPY: target.eyeH=15; target.eyeY=28; break;
     case CURIOUS: target.eyeH=38; target.eyeY=12; target.tilt=2; break;
+  }
+  // Mood affects the face continuously, not only the occasional idle emotion.
+  // Keep manually selected emotions recognizable while changing their intensity.
+  if(!shakeRecovery){
+    float low=constrain((50.0f-mood)/50.0f,0.0f,1.0f);
+    float high=constrain((mood-50.0f)/50.0f,0.0f,1.0f);
+    target.eyeY += low*5.0f - high*2.0f;
+    target.eyeH += high*3.0f - low*4.0f;
+    target.smile += high*0.55f - low*0.45f;
+    target.smile=constrain(target.smile,-1.0f,1.0f);
+    if(requestedEmotion==NEUTRAL && low>0.45f) target.smile=-0.45f;
+    if(requestedEmotion==NEUTRAL && high>0.45f) target.smile=0.45f;
   }
 }
 void animateFace(){
@@ -75,11 +86,10 @@ int clampi(int v,int lo,int hi){return v<lo?lo:(v>hi?hi:v);}
 
 // Rounded eye with top/bottom edge trimming. The trim itself is part of
 // the eye silhouette (no separate eyebrows).
-void drawOneEye(int cx,int cy,int ew,int eh,int tilt,int px,int py,bool closed,
-                bool cutInnerTop,bool cutOuterTop){
+void drawOneEye(int cx,int cy,int ew,int eh,int slope,int px,int py,bool closed,
+                bool cutInnerTop,bool cutOuterTop,bool starEye,bool scared){
   int x=cx-ew/2, y=cy-eh/2;
   if(closed || eh<5){
-    // Rounded-looking closed eyelid: short horizontal line with soft end caps.
     display.drawFastHLine(x+5,cy,ew-10,SSD1306_WHITE);
     display.fillCircle(x+5,cy,1,SSD1306_WHITE);
     display.fillCircle(x+ew-5,cy,1,SSD1306_WHITE);
@@ -87,24 +97,38 @@ void drawOneEye(int cx,int cy,int ew,int eh,int tilt,int px,int py,bool closed,
   }
   int radius=min(ew/3,eh/2);
   display.fillRoundRect(x,y,ew,eh,radius,SSD1306_WHITE);
-
-  // Concave, fully rounded corner cuts create expression without sharp edges.
-  // A black circle softly trims the selected upper corner of each eye.
-  int cutR=max(5,min(9,eh/3));
+  // Rounded corner cuts form brows without drawing separate eyebrow strokes.
+  int cutR=max(6,min(12,eh/2));
   if(cutInnerTop){
-    int cutX=(cx<64)?(x+ew+cutR-2):(x-cutR+2);
+    int cutX=(cx<64)?(x+ew+cutR-3):(x-cutR+3);
     display.fillCircle(cutX,y+2,cutR,SSD1306_BLACK);
   }
   if(cutOuterTop){
-    int cutX=(cx<64)?(x-cutR+2):(x+ew+cutR-2);
+    int cutX=(cx<64)?(x-cutR+3):(x+ew+cutR-3);
     display.fillCircle(cutX,y+2,cutR,SSD1306_BLACK);
   }
-
-  int pr=max(3,min(7,eh/5));
-  int pupilCx=clampi(cx+px,x+pr+4,x+ew-pr-4);
-  int pupilCy=clampi(cy+py,y+pr+3,y+eh-pr-3);
-  display.fillCircle(pupilCx,pupilCy,pr,SSD1306_BLACK);
-  display.fillCircle(pupilCx-2,pupilCy-2,1,SSD1306_WHITE);
+  // A sloped black mask makes anger visibly furrow inward; its ends stay rounded.
+  if(slope!=0){
+    if(cx<64) display.fillCircle(x+ew-1,y+slope+2,cutR/2,SSD1306_BLACK);
+    else display.fillCircle(x+1,y+slope+2,cutR/2,SSD1306_BLACK);
+  }
+  int pupilCx=clampi(cx+px,x+8,x+ew-8);
+  int pupilCy=clampi(cy+py,y+8,y+eh-8);
+  if(scared){
+    // Narrow vertical pupils, jittered by the caller to look frightened.
+    display.fillRoundRect(pupilCx-2,pupilCy-7,4,14,2,SSD1306_BLACK);
+  } else {
+    int pr=max(3,min(7,eh/5));
+    display.fillCircle(pupilCx,pupilCy,pr,SSD1306_BLACK);
+    display.fillCircle(pupilCx-2,pupilCy-2,1,SSD1306_WHITE);
+    if(starEye){
+      // White four-point sparkle drawn inside the dark pupil.
+      display.drawLine(pupilCx,pupilCy-5,pupilCx,pupilCy+5,SSD1306_WHITE);
+      display.drawLine(pupilCx-5,pupilCy,pupilCx+5,pupilCy,SSD1306_WHITE);
+      display.drawPixel(pupilCx-3,pupilCy-3,SSD1306_WHITE);
+      display.drawPixel(pupilCx+3,pupilCy+3,SSD1306_WHITE);
+    }
+  }
 }
 void drawMouth(float amount){
   if(fabsf(amount)<0.08f)return;
@@ -124,22 +148,27 @@ void drawMouth(float amount){
 }
 void renderFace(){
   display.clearDisplay();
-  bool blink=!reached(millis(),blinkEnd);
+  uint32_t now=millis();
+  bool blink=!reached(now,blinkEnd);
   int ew=(int)face.eyeW, eh=(int)face.eyeH;
   int cy=(int)(face.eyeY+eh/2);
-  int tilt=(int)face.tilt;
   int leftCx=34, rightCx=94;
   bool angry=(requestedEmotion==ANGRY);
   bool sad=(requestedEmotion==SAD);
-  // Angry: trim the upper inner corners (like brows). Sad: trim the upper outer corners.
-  drawOneEye(leftCx,cy,ew,eh,tilt,(int)face.pupilX,(int)face.pupilY,blink,
-             angry,sad);
-  drawOneEye(rightCx,cy,ew,eh,-tilt,(int)face.pupilX,(int)face.pupilY,blink,
-             angry,sad);
+  bool curious=(requestedEmotion==CURIOUS);
+  bool scared=(requestedEmotion==SCARED);
+  bool stars=(requestedEmotion==DELIGHTED);
+  int leftW=curious?min(56,ew+9):ew;
+  int rightW=curious?max(29,ew-12):ew;
+  int shakeX=scared?(int)(sinf(now*0.075f)*4.0f):0;
+  int shakeY=scared?(int)(sinf(now*0.11f)*3.0f):0;
+  drawOneEye(leftCx,cy,leftW,eh,(int)face.tilt,(int)face.pupilX+shakeX,(int)face.pupilY+shakeY,blink,
+             angry,sad,stars,scared);
+  drawOneEye(rightCx,cy,rightW,eh,-(int)face.tilt,(int)face.pupilX-shakeX,(int)face.pupilY-shakeY,blink,
+             angry,sad,stars,scared);
   drawMouth(face.smile);
   display.display();
 }
-
 // Startup: keep the established one-second glitch, then wake-up sequence.
 void glitchFrame(){
   display.clearDisplay();
@@ -190,6 +219,7 @@ void initMPU(){
 void triggerShakeReaction(){
   uint32_t now=millis();
   shakePeaks=0;
+  manualEmotion=false;
   setEmotion(SCARED,1000);
   mood=max(0,mood-12);
   shakeRecovery=true;
@@ -238,11 +268,15 @@ void updateMotion(){
   float ty=filtAy;
   if(fabsf(tx)<0.12f)tx=0;
   if(fabsf(ty)<0.14f)ty=0;
-  float gx=constrain(tx*19.0f,-13.0f,13.0f);
-  float gy=constrain(-ty*15.0f,-9.0f,9.0f);
-  gazeTargetX=gx;
-  gazeTargetY=gy;
+  float gx=constrain(tx*25.0f,-17.0f,17.0f);
+  float gy=constrain(-ty*21.0f,-12.0f,12.0f);
   tiltActive=(fabsf(tx)>0.12f || fabsf(ty)>0.14f);
+  // Only let the IMU take control while the device is actually tilted.
+  // Otherwise autonomous glances and serial gaze tests remain in control.
+  if(tiltActive){
+    gazeTargetX=gx;
+    gazeTargetY=gy;
+  }
 }
 
 void updateCharacter(){
@@ -255,7 +289,7 @@ void updateCharacter(){
   // Mood slowly drifts toward neutral, but interaction changes it immediately.
   if(now-lastMoodUpdate>12000){
     lastMoodUpdate=now;
-    if(mood>55)mood--; else if(mood<45)mood++;
+    if(mood>58)mood--; else if(mood<42)mood++;
   }
 
   // Natural eye movement: glance left/right/up, pause, then return to center.
@@ -270,8 +304,8 @@ void updateCharacter(){
     nextLook=now+random(1700,3600);
   }
   if(reached(now,gazeUntil)){gazeTargetX=0;gazeTargetY=0;}
-  gazeX=smooth(gazeX,gazeTargetX,0.24f);
-  gazeY=smooth(gazeY,gazeTargetY,0.24f);
+  gazeX=smooth(gazeX,gazeTargetX,0.32f);
+  gazeY=smooth(gazeY,gazeTargetY,0.32f);
 
   if(reached(now,nextBlink)){
     blinkEnd=now+110;
