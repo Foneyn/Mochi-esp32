@@ -58,7 +58,8 @@ void setTargets(){
     case SURPRISED: target.eyeH=46; target.eyeW=43; target.eyeY=7; break;
     case NEUTRAL: break;
     case HAPPY: target.eyeH=39; target.eyeY=12; target.smile=1; break;
-    case DELIGHTED: target.eyeH=42; target.eyeY=10; target.smile=1; break;\n    case AFFECTION: target.eyeH=45; target.eyeW=48; target.eyeY=8; target.smile=1.0f; break;
+    case DELIGHTED: target.eyeH=42; target.eyeY=10; target.smile=1; break;
+    case AFFECTION: target.eyeH=45; target.eyeW=48; target.eyeY=8; target.smile=1.0f; break;
     case SCARED: target.eyeH=43; target.eyeW=43; target.eyeY=9; break;
     case SLEEPY: target.eyeH=15; target.eyeY=28; break;
     case CURIOUS: target.eyeH=38; target.eyeY=12; target.tilt=2; break;
@@ -168,6 +169,18 @@ void renderFace(){
              angry,sad,stars,scared);
   drawOneEye(rightCx,cy,rightW,eh,-(int)face.tilt,(int)face.pupilX-shakeX,(int)face.pupilY-shakeY,blink,
              angry,sad,stars,scared);
+  if(requestedEmotion==AFFECTION){
+    // Soft dotted blush on the monochrome OLED.
+    const int blushY=48;
+    for(int side=0; side<2; ++side){
+      int bx = side==0 ? 12 : 102;
+      display.drawPixel(bx+3,blushY,SSD1306_WHITE);
+      display.drawPixel(bx+8,blushY-2,SSD1306_WHITE);
+      display.drawPixel(bx+13,blushY,SSD1306_WHITE);
+      display.drawPixel(bx+5,blushY+3,SSD1306_WHITE);
+      display.drawPixel(bx+11,blushY+3,SSD1306_WHITE);
+    }
+  }
   drawMouth(face.smile);
   display.display();
 }
