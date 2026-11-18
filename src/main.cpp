@@ -9,19 +9,23 @@
 // I2C: SDA=21, SCL=18. MPU6050 address=0x68 (optional).
 
 constexpr int PIN_SDA = 21, PIN_SCL = 18;
+constexpr int PIN_BUTTON = 25; // momentary button to GND, INPUT_PULLUP
 constexpr uint8_t OLED_ADDR = 0x3C, MPU_ADDR = 0x68;
 constexpr int W = 128, H = 64;
 Adafruit_SSD1306 display(W, H, &Wire, -1);
 
-enum Emotion : uint8_t { NEUTRAL, HAPPY, DELIGHTED, SURPRISED, ANGRY, SAD, SLEEPY, CURIOUS, SCARED };
+enum Emotion : uint8_t { NEUTRAL, HAPPY, DELIGHTED, AFFECTION, SURPRISED, ANGRY, SAD, SLEEPY, CURIOUS, SCARED };
 Emotion requestedEmotion = NEUTRAL;
 bool mpuPresent=false, waking=true, shakeRecovery=false, manualEmotion=false;
+uint8_t recoveryStage=0; // 1 scared, 2 angry, 3 sad
 uint32_t bootAt=0, lastFrame=0, lastMpu=0, emotionUntil=0, recoveryUntil=0, nextBlink=0, blinkEnd=0, nextIdle=0;
 uint32_t nextLook=0, gazeUntil=0, lastMoodUpdate=0;
 float prevAx=0,prevAy=0,prevAz=0, gazeX=0,gazeY=0;
 float filtAx=0, filtAy=0, filtAz=1;
 bool tiltActive=false;
 uint32_t shakeCooldown=0, lastShakePeak=0;
+uint32_t buttonChangedAt=0;
+bool buttonStableHigh=true, buttonLastReadHigh=true;
 uint8_t shakePeaks=0;
 float gazeTargetX=0, gazeTargetY=0;
 int mood=60; // 0 = gloomy, 100 = delighted
@@ -31,8 +35,9 @@ struct Face {
   float eyeH, eyeW, eyeY, pupilX, pupilY, tilt, smile;
 };
 // smile: +1 = tiny smile, -1 = tiny frown, 0 = no mouth.
-Face face={35,46,14,0,0,0,0};
-Face target={35,46,14,0,0,0,0};
+// Start with eyes already shut: no open-to-closed snap after the boot glitch.
+Face face={7,46,31,0,0,0,0};
+Face target={7,46,31,0,0,0,0};
 
 bool reached(uint32_t now,uint32_t t){return (int32_t)(now-t)>=0;}
 float smooth(float current,float dest,float amount){return current+(dest-current)*amount;}
@@ -53,7 +58,7 @@ void setTargets(){
     case SURPRISED: target.eyeH=46; target.eyeW=43; target.eyeY=7; break;
     case NEUTRAL: break;
     case HAPPY: target.eyeH=39; target.eyeY=12; target.smile=1; break;
-    case DELIGHTED: target.eyeH=42; target.eyeY=10; target.smile=1; break;
+    case DELIGHTED: target.eyeH=42; target.eyeY=10; target.smile=1; break;\n    case AFFECTION: target.eyeH=45; target.eyeW=48; target.eyeY=8; target.smile=1.0f; break;
     case SCARED: target.eyeH=43; target.eyeW=43; target.eyeY=9; break;
     case SLEEPY: target.eyeH=15; target.eyeY=28; break;
     case CURIOUS: target.eyeH=38; target.eyeY=12; target.tilt=2; break;
@@ -65,7 +70,7 @@ void setTargets(){
     float high=constrain((mood-50.0f)/50.0f,0.0f,1.0f);
     target.eyeY += low*5.0f - high*2.0f;
     target.eyeH += high*3.0f - low*4.0f;
-    target.smile += high*0.55f - low*0.45f;
+    target.smile += high*0.85f - low*0.45f;
     target.smile=constrain(target.smile,-1.0f,1.0f);
     if(requestedEmotion==NEUTRAL && low>0.45f) target.smile=-0.45f;
     if(requestedEmotion==NEUTRAL && high>0.45f) target.smile=0.45f;
@@ -97,20 +102,17 @@ void drawOneEye(int cx,int cy,int ew,int eh,int slope,int px,int py,bool closed,
   }
   int radius=min(ew/3,eh/2);
   display.fillRoundRect(x,y,ew,eh,radius,SSD1306_WHITE);
-  // Rounded corner cuts form brows without drawing separate eyebrow strokes.
-  int cutR=max(6,min(12,eh/2));
+  // Clean, straight diagonal corner cuts create a crisp furrowed-brow silhouette.
+  // Use mirrored triangles so both eyes have the same geometry.
+  int cutW=max(10,min(16,ew/3));
+  int cutH=max(7,min(12,eh/3));
   if(cutInnerTop){
-    int cutX=(cx<64)?(x+ew+cutR-3):(x-cutR+3);
-    display.fillCircle(cutX,y+2,cutR,SSD1306_BLACK);
+    if(cx<64) display.fillTriangle(x+ew-cutW,y,x+ew,y,x+ew,y+cutH,SSD1306_BLACK);
+    else      display.fillTriangle(x,y,x+cutW,y,x,y+cutH,SSD1306_BLACK);
   }
   if(cutOuterTop){
-    int cutX=(cx<64)?(x-cutR+3):(x+ew+cutR-3);
-    display.fillCircle(cutX,y+2,cutR,SSD1306_BLACK);
-  }
-  // A sloped black mask makes anger visibly furrow inward; its ends stay rounded.
-  if(slope!=0){
-    if(cx<64) display.fillCircle(x+ew-1,y+slope+2,cutR/2,SSD1306_BLACK);
-    else display.fillCircle(x+1,y+slope+2,cutR/2,SSD1306_BLACK);
+    if(cx<64) display.fillTriangle(x,y,x+cutW,y,x,y+cutH,SSD1306_BLACK);
+    else      display.fillTriangle(x+ew-cutW,y,x+ew,y,x+ew,y+cutH,SSD1306_BLACK);
   }
   int pupilCx=clampi(cx+px,x+8,x+ew-8);
   int pupilCy=clampi(cy+py,y+8,y+eh-8);
@@ -118,7 +120,7 @@ void drawOneEye(int cx,int cy,int ew,int eh,int slope,int px,int py,bool closed,
     // Narrow vertical pupils, jittered by the caller to look frightened.
     display.fillRoundRect(pupilCx-2,pupilCy-7,4,14,2,SSD1306_BLACK);
   } else {
-    int pr=max(3,min(7,eh/5));
+    int pr=(requestedEmotion==AFFECTION) ? max(5,min(9,eh/4)) : max(3,min(7,eh/5));
     display.fillCircle(pupilCx,pupilCy,pr,SSD1306_BLACK);
     display.fillCircle(pupilCx-2,pupilCy-2,1,SSD1306_WHITE);
     if(starEye){
@@ -133,10 +135,10 @@ void drawOneEye(int cx,int cy,int ew,int eh,int slope,int px,int py,bool closed,
 void drawMouth(float amount){
   if(fabsf(amount)<0.08f)return;
   // Small smooth arc. Positive is a smile; negative is an inverted smile/frown.
-  int width=13;
+  int width=19;
   int x0=64-width/2, x1=64+width/2;
   int baseY=55;
-  int bend=(int)(3.0f*amount);
+  int bend=(int)(5.0f*amount);
   int prevX=x0, prevY=baseY;
   for(int i=1;i<=width;i++){
     float t=(float)i/width;
@@ -184,12 +186,14 @@ void startup(){
   if(t<1000){glitchFrame();return;}
   if(t<1350){display.clearDisplay();display.display();return;}
   if(t<2200){
+    // Eyes are closed from the very first visible wake-up frame; hold, don't close them.
     requestedEmotion=SLEEPY;
-    face.eyeH=smooth(face.eyeH,7,0.12f);
-    face.eyeY=smooth(face.eyeY,31,0.12f);
+    face.eyeH=7;
+    face.eyeY=31;
     renderFace();return;
   }
   if(t<3400){
+    // Slowly open from the already-closed pose.
     requestedEmotion=NEUTRAL;
     animateFace();
     renderFace();return;
@@ -220,11 +224,12 @@ void triggerShakeReaction(){
   uint32_t now=millis();
   shakePeaks=0;
   manualEmotion=false;
-  setEmotion(SCARED,1000);
-  mood=max(0,mood-12);
+  recoveryStage=1;
+  setEmotion(SCARED);
+  mood=max(0,mood-8);
   shakeRecovery=true;
-  recoveryUntil=now+1000;
-  shakeCooldown=now+2600;
+  recoveryUntil=now+1100;
+  shakeCooldown=now+2800;
   // Brief startled gaze; normal tilt tracking resumes after the reaction.
   gazeTargetX=0; gazeTargetY=-3;
   Serial.println("Mochi: shake detected! startled -> recovery");
@@ -250,13 +255,13 @@ void updateMotion(){
   float delta=fabsf(ax-prevAx)+fabsf(ay-prevAy)+fabsf(az-prevAz);
   float accelMagnitude=sqrtf(ax*ax+ay*ay+az*az);
   prevAx=ax; prevAy=ay; prevAz=az;
-  bool shakePeak = (delta > 0.62f) &&
-                   (fabsf(accelMagnitude-1.0f) > 0.18f || delta > 0.95f);
+  bool shakePeak = (delta > 1.00f) &&
+                   (fabsf(accelMagnitude-1.0f) > 0.30f || delta > 1.35f);
   if(shakePeak && reached(now,shakeCooldown) && !shakeRecovery){
-    if(now-lastShakePeak > 700) shakePeaks=0;
+    if(now-lastShakePeak > 500) shakePeaks=0;
     lastShakePeak=now;
-    if(shakePeaks < 3) shakePeaks++;
-    if(shakePeaks >= 2){
+    if(shakePeaks < 4) shakePeaks++;
+    if(shakePeaks >= 3){
       triggerShakeReaction();
     }
   }
@@ -281,8 +286,22 @@ void updateMotion(){
 
 void updateCharacter(){
   uint32_t now=millis();
-  if(shakeRecovery&&reached(now,recoveryUntil)){
-    shakeRecovery=false; mood=max(0,mood-5); setEmotion(SAD,3500);
+  if(shakeRecovery && reached(now,recoveryUntil)){
+    // A deliberate emotional arc: startled -> angry -> sad -> calm.
+    // Each face morphs through the normal animation interpolation.
+    if(recoveryStage==1){
+      recoveryStage=2;
+      setEmotion(ANGRY);
+      recoveryUntil=now+1250;
+    } else if(recoveryStage==2){
+      recoveryStage=3;
+      setEmotion(SAD);
+      recoveryUntil=now+1900;
+    } else {
+      recoveryStage=0;
+      shakeRecovery=false;
+      setEmotion(NEUTRAL);
+    }
   }
   if(emotionUntil&&reached(now,emotionUntil)){emotionUntil=0;setEmotion(NEUTRAL);}
 
@@ -330,12 +349,36 @@ void updateCharacter(){
     nextIdle=now+random(6500,12500);
   }
 }
+
+void updateButton(){
+  bool readingHigh = (digitalRead(PIN_BUTTON) != LOW);
+  uint32_t now = millis();
+  if(readingHigh != buttonLastReadHigh){
+    buttonLastReadHigh = readingHigh;
+    buttonChangedAt = now;
+  }
+  if(now - buttonChangedAt > 35 && readingHigh != buttonStableHigh){
+    buttonStableHigh = readingHigh;
+    if(!buttonStableHigh){
+      // A press triggers the dedicated affectionate blush expression.
+      mood = min(100, mood + 9);
+      manualEmotion = false;
+      shakeRecovery = false;
+      recoveryStage = 0;
+      emotionUntil = 0;
+      setEmotion(AFFECTION, 2400);
+      nextIdle = now + 2200;
+      Serial.printf("Mochi: affection button! mood=%d/100\\n", mood);
+    }
+  }
+}
+
 void printHelp(){
   Serial.println("MOCHI TEST COMMANDS:");
   Serial.println("1 angry | 2 sad | 3 surprised | 4 neutral | 5 happy | 6 star-eyes");
   Serial.println("7 sleepy | 8 curious | 9 scared | a auto mode | + mood up | - mood down");
   Serial.println("l/r/u/d/c gaze left/right/up/down/center | b blink | m mood value | ? help");
-  Serial.println("s simulate shake reaction (for testing)");
+  Serial.println("s simulate shake reaction | GPIO25 button to GND = affection");
 }
 void serialCommands(){
   while(Serial.available()){
@@ -368,6 +411,7 @@ void serialCommands(){
 
 void setup(){
   Serial.begin(115200);randomSeed(esp_random());
+  pinMode(PIN_BUTTON, INPUT_PULLUP);
   Wire.begin(PIN_SDA,PIN_SCL);Wire.setClock(100000);
   if(!display.begin(SSD1306_SWITCHCAPVCC,OLED_ADDR)){
     Serial.println("OLED init failed; check SSD1306/address");while(true)delay(100);
@@ -383,7 +427,7 @@ void loop(){
   if(now-lastFrame>=33){
     lastFrame=now;
     if(waking)startup();
-    else {updateMotion();updateCharacter();animateFace();renderFace();}
+    else {updateMotion();updateButton();updateCharacter();animateFace();renderFace();}
   }
   serialCommands();
 }
