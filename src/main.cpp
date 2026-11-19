@@ -29,7 +29,7 @@ bool buttonStableHigh=true, buttonLastReadHigh=true;
 uint8_t shakePeaks=0;
 float gazeTargetX=0, gazeTargetY=0;
 int mood=60; // 0 = gloomy, 100 = delighted
-nuint8_t mouthStyle=0; // 0 auto/arc, 1 D, 2 P, 3 tiny 3, 4 O, 5 vertical line
+uint8_t mouthStyle=0; // 0 auto/arc, 1 D, 2 P, 3 tiny 3, 4 O, 5 vertical line
 
 // Animated face parameters. Every emotion changes targets, never hard-cuts.
 struct Face {
