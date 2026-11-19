@@ -76,7 +76,11 @@ void setTargets(){
     case SLEEPY:
       target.eyeH=12; target.eyeY=29; target.smile=0; break;
     case CURIOUS:
-      target.eyeH=38; target.eyeY=12; target.tilt=2; break;
+      target.eyeH=49;
+      target.eyeW=46;
+      target.eyeY=5;
+      target.tilt=0;
+      break;
   }
   if(!shakeRecovery && requestedEmotion!=AFFECTION && requestedEmotion!=SCARED && requestedEmotion!=SURPRISED && requestedEmotion!=SLEEPY){
     float low=constrain((50.0f-mood)/50.0f,0.0f,1.0f);
@@ -173,8 +177,8 @@ void renderFace(){
   bool stars=(requestedEmotion==DELIGHTED);
   bool affection=(requestedEmotion==AFFECTION);
   bool sleepy=(requestedEmotion==SLEEPY || sleeping);
-  int leftW=curious?min(56,ew+9):ew;
-  int rightW=curious?max(29,ew-12):ew;
+  int leftW=ew;
+  int rightW=ew;
   int shakeX=scared?(int)(sinf(now*0.075f)*4.0f):0;
   int shakeY=scared?(int)(sinf(now*0.11f)*3.0f):0;
   drawOneEye(leftCx,cy,leftW,eh,(int)face.tilt,(int)face.pupilX+shakeX,(int)face.pupilY+shakeY,blink,
@@ -383,6 +387,22 @@ void updateCharacter(){
   }
 }
 
+void triggerAffection() {
+  uint32_t now = millis();
+  mood = min(100, mood + 20);
+  lastInteraction = now;
+  sleeping = false;
+  sleepSequence = false;
+  manualEmotion = false;
+  shakeRecovery = false;
+  recoveryStage = 0;
+  emotionUntil = 0;
+  setEmotion(AFFECTION, 3200);
+  mouthStyle = random(0, 2) ? 2 : 3;
+  nextIdle = now + 2200;
+  Serial.printf("Mochi: affection! mood=%d/100\\n", mood);
+}
+
 void updateButton(){
   bool readingHigh = (digitalRead(PIN_BUTTON) != LOW);
   uint32_t now = millis();
@@ -393,22 +413,8 @@ void updateButton(){
   if(now - buttonChangedAt > 35 && readingHigh != buttonStableHigh){
     buttonStableHigh = readingHigh;
     if(!buttonStableHigh){
-      // A press triggers the dedicated affectionate blush expression.
-      bool wakingFromSleep=sleeping || sleepSequence;
-      mood = min(100, mood + 20);
-      lastInteraction = now; sleeping=false; sleepSequence=false;
-      manualEmotion = false;
-      shakeRecovery = false;
-      recoveryStage = 0;
-      emotionUntil = 0;
-      setEmotion(AFFECTION, 3200);
-      if(wakingFromSleep) {
-          Serial.println("Mochi: woke up to affection!");
-      }
-      
-      mouthStyle = random(0, 2) ? 2 : 3;
-      nextIdle = now + 2200;
-      Serial.printf("Mochi: affection button! mood=%d/100\\n", mood);
+      // Physical button triggers the same AFFECTION reaction as serial command 'p'.
+      triggerAffection();
     }
   }
 }
@@ -439,6 +445,7 @@ void serialCommands(){
       case 'm': Serial.printf("mood=%d/100\n",mood);break;
       case 'b': blinkEnd=millis()+180;break;
       case 's': triggerShakeReaction();break;
+      case 'p': triggerAffection();break;
       case 'l': gazeTargetX=-13;gazeTargetY=0;tiltActive=false;gazeUntil=millis()+1200;break;
       case 'r': gazeTargetX=13;gazeTargetY=0;tiltActive=false;gazeUntil=millis()+1200;break;
       case 'u': gazeTargetX=0;gazeTargetY=-9;tiltActive=false;gazeUntil=millis()+1200;break;
