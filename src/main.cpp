@@ -28,7 +28,8 @@ uint32_t buttonChangedAt=0;
 bool buttonStableHigh=true, buttonLastReadHigh=true;
 uint8_t shakePeaks=0;
 float gazeTargetX=0, gazeTargetY=0;
-int mood=60; // 0 = gloomy, 100 = delighted\nuint8_t mouthStyle=0; // 0 auto/arc, 1 D, 2 P, 3 tiny 3, 4 O, 5 vertical line
+int mood=60; // 0 = gloomy, 100 = delighted
+nuint8_t mouthStyle=0; // 0 auto/arc, 1 D, 2 P, 3 tiny 3, 4 O, 5 vertical line
 
 // Animated face parameters. Every emotion changes targets, never hard-cuts.
 struct Face {
@@ -250,7 +251,8 @@ void triggerShakeReaction(){
   manualEmotion=false;
   recoveryStage=1;
   setEmotion(SCARED);
-  mood=max(0,mood-10);\n  lastInteraction=now; sleeping=false; sleepSequence=false;
+  mood=max(0,mood-10);
+  lastInteraction=now; sleeping=false; sleepSequence=false;
   shakeRecovery=true;
   recoveryUntil=now+1100;
   shakeCooldown=now+2800;
@@ -400,7 +402,11 @@ void updateButton(){
       recoveryStage = 0;
       emotionUntil = 0;
       setEmotion(AFFECTION, 3200);
-      if(wakingFromSleep) Serial.println("Mochi: woke up to affection!");\n      mouthStyle = random(0,2) ? 2 : 3;
+      if(wakingFromSleep) {
+          Serial.println("Mochi: woke up to affection!");
+      }
+      
+      mouthStyle = random(0, 2) ? 2 : 3;
       nextIdle = now + 2200;
       Serial.printf("Mochi: affection button! mood=%d/100\\n", mood);
     }
