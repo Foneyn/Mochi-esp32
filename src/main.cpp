@@ -47,48 +47,54 @@ void setEmotion(Emotion e,uint32_t duration=0){
   emotionUntil=duration?millis()+duration:0;
 }
 void setTargets(){
+  static Emotion lastMouthEmotion = (Emotion)255;
+  bool enteringEmotion = (requestedEmotion != lastMouthEmotion);
+  if(enteringEmotion) { mouthStyle=0; lastMouthEmotion=requestedEmotion; }
   target={35,46,14,gazeX,gazeY,0,0};
-  mouthStyle=0;
   switch(requestedEmotion){
     case ANGRY:
-      target.eyeH=27; target.eyeY=19; target.tilt=5; target.smile=-0.9f;
-      break;
+      target.eyeH=29; target.eyeY=17; target.tilt=4; target.smile=0;
+      mouthStyle=6; break;
     case SAD:
-      target.eyeH=29; target.eyeY=18; target.pupilY=gazeY+8; target.pupilX=gazeX-2; target.smile=-0.9f;
+      target.eyeH=29; target.eyeY=18; target.pupilY=gazeY+9; target.pupilX=gazeX-3;
+      target.smile=0;
+      if(enteringEmotion) mouthStyle=(random(0,3)==0)?0:((random(0,2)==0)?6:7);
       break;
     case SURPRISED:
-      target.eyeH=47; target.eyeW=44; target.eyeY=6; target.smile=0;
-      mouthStyle=4; break;
+      target.eyeH=47; target.eyeW=44; target.eyeY=6; target.smile=0; mouthStyle=4; break;
     case NEUTRAL:
-      target.smile=0; mouthStyle=(random(0,100)<12)?5:0; break;
-    case HAPPY:
-      target.eyeH=41; target.eyeY=10; target.smile=0.9f;
-      mouthStyle=(random(0,2)==0)?0:1; break;
-    case DELIGHTED:
-      target.eyeH=48; target.eyeW=50; target.eyeY=4; target.smile=1;
-      mouthStyle=random(0,3)+1; break;
-    case AFFECTION:
-      target.eyeH=18; target.eyeW=48; target.eyeY=19; target.smile=1;
-      mouthStyle=(mouthStyle==2||mouthStyle==3)?mouthStyle:random(2,4); break;
-    case SCARED:
-      target.eyeH=46; target.eyeW=44; target.eyeY=6; target.smile=0;
-      mouthStyle=4; break;
-    case SLEEPY:
-      target.eyeH=12; target.eyeY=29; target.smile=0; break;
-    case CURIOUS:
-      target.eyeH=49;
-      target.eyeW=46;
-      target.eyeY=5;
-      target.tilt=0;
+      target.smile=0;
+      if(enteringEmotion) mouthStyle=(random(0,5)==0)?5:0;
       break;
+    case HAPPY:
+      target.eyeH=43; target.eyeY=9; target.smile=0;
+      if(enteringEmotion) mouthStyle=(random(0,2)==0)?0:1;
+      break;
+    case DELIGHTED:
+      target.eyeH=53; target.eyeW=52; target.eyeY=1; target.smile=0;
+      if(enteringEmotion) mouthStyle=random(1,4);
+      break;
+    case AFFECTION:
+      target.eyeH=18; target.eyeW=46; target.eyeY=19; target.smile=0;
+      if(enteringEmotion && mouthStyle!=2 && mouthStyle!=3) mouthStyle=2;
+      break;
+    case SCARED:
+      target.eyeH=47; target.eyeW=44; target.eyeY=6; target.smile=0; mouthStyle=4; break;
+    case SLEEPY:
+      target.eyeH=10; target.eyeY=29; target.smile=0; mouthStyle=0; break;
+    case CURIOUS:
+      target.eyeH=49; target.eyeW=46; target.eyeY=5; target.tilt=0; break;
   }
-  if(!shakeRecovery && requestedEmotion!=AFFECTION && requestedEmotion!=SCARED && requestedEmotion!=SURPRISED && requestedEmotion!=SLEEPY){
+  if(!shakeRecovery && requestedEmotion!=AFFECTION && requestedEmotion!=SCARED &&
+     requestedEmotion!=SURPRISED && requestedEmotion!=SLEEPY){
     float low=constrain((50.0f-mood)/50.0f,0.0f,1.0f);
     float high=constrain((mood-50.0f)/50.0f,0.0f,1.0f);
-    target.eyeY += low*5.0f-high*2.0f;
-    target.eyeH += high*3.0f-low*4.0f;
-    if(requestedEmotion==NEUTRAL && mood<20) target.smile=-0.75f;
-    else if(requestedEmotion==NEUTRAL && mood>=80) {target.smile=0.85f; mouthStyle=random(0,3)+1;}
+    if(requestedEmotion==NEUTRAL){
+      target.eyeY += low*5.0f-high*2.0f;
+      target.eyeH += high*3.0f-low*4.0f;
+      if(mood<20 && enteringEmotion){ mouthStyle=(random(0,3)==0)?0:6; }
+      else if(mood>=80 && enteringEmotion && mouthStyle==0){ mouthStyle=random(1,4); }
+    }
   }
 }
 void animateFace(){
@@ -148,19 +154,53 @@ void drawOneEye(int cx,int cy,int ew,int eh,int slope,int px,int py,bool closed,
   }
 }
 void drawMouth(float amount){
-  if(fabsf(amount)<0.08f)return;
-  // Small smooth arc. Positive is a smile; negative is an inverted smile/frown.
-  int width=19;
-  int x0=64-width/2, x1=64+width/2;
-  int baseY=55;
-  int bend=(int)(5.0f*amount);
-  int prevX=x0, prevY=baseY;
+  const int cx=64, cy=55;
+  switch(mouthStyle){
+    case 0: // no mouth, unless a smooth neutral/smile curve is requested
+      if(fabsf(amount)<0.08f) return;
+      break;
+    case 1: // D / smile
+      display.drawLine(cx-7,cy-5,cx-7,cy+3,SSD1306_WHITE);
+      display.drawLine(cx-7,cy+3,cx+2,cy+3,SSD1306_WHITE);
+      display.drawLine(cx+2,cy+3,cx+7,cy,SSD1306_WHITE);
+      display.drawLine(cx+7,cy,cx+2,cy-5,SSD1306_WHITE);
+      display.drawLine(cx+2,cy-5,cx-7,cy-5,SSD1306_WHITE);
+      return;
+    case 2: // P
+      display.drawLine(cx-5,cy+5,cx-5,cy-6,SSD1306_WHITE);
+      display.drawLine(cx-5,cy-6,cx+3,cy-6,SSD1306_WHITE);
+      display.drawLine(cx+3,cy-6,cx+6,cy-3,SSD1306_WHITE);
+      display.drawLine(cx+6,cy-3,cx+3,cy,SSD1306_WHITE);
+      display.drawLine(cx+3,cy,cx-5,cy,SSD1306_WHITE);
+      return;
+    case 3: // 3
+      display.drawCircle(cx,cy-3,3,SSD1306_WHITE);
+      display.drawCircle(cx,cy+3,3,SSD1306_WHITE);
+      display.drawFastVLine(cx-4,cy-3,6,SSD1306_BLACK);
+      return;
+    case 4: // O
+      display.drawCircle(cx,cy-1,5,SSD1306_WHITE);
+      return;
+    case 5: // |
+      display.drawFastVLine(cx,cy-5,10,SSD1306_WHITE);
+      return;
+    case 6: // inverted D / frown
+      display.drawLine(cx-8,cy-3,cx-4,cy+2,SSD1306_WHITE);
+      display.drawLine(cx-4,cy+2,cx+4,cy+2,SSD1306_WHITE);
+      display.drawLine(cx+4,cy+2,cx+8,cy-3,SSD1306_WHITE);
+      return;
+    case 7: // (
+      display.drawLine(cx+3,cy-5,cx-2,cy-3,SSD1306_WHITE);
+      display.drawLine(cx-2,cy-3,cx-4,cy+1,SSD1306_WHITE);
+      display.drawLine(cx-4,cy+1,cx-2,cy+5,SSD1306_WHITE);
+      return;
+  }
+  const int width=19, x0=cx-width/2;
+  int bend=(int)(5.0f*amount), px=x0, py=cy;
   for(int i=1;i<=width;i++){
     float t=(float)i/width;
-    int x=x0+i;
-    int y=baseY+(int)(bend*4.0f*t*(1.0f-t));
-    display.drawLine(prevX,prevY,x,y,SSD1306_WHITE);
-    prevX=x; prevY=y;
+    int x=x0+i, y=cy+(int)(bend*4.0f*t*(1.0f-t));
+    display.drawLine(px,py,x,y,SSD1306_WHITE); px=x; py=y;
   }
 }
 void renderFace(){
@@ -181,20 +221,26 @@ void renderFace(){
   int rightW=ew;
   int shakeX=scared?(int)(sinf(now*0.075f)*4.0f):0;
   int shakeY=scared?(int)(sinf(now*0.11f)*3.0f):0;
-  drawOneEye(leftCx,cy,leftW,eh,(int)face.tilt,(int)face.pupilX+shakeX,(int)face.pupilY+shakeY,blink,
-             angry,sad,stars,scared);
-  drawOneEye(rightCx,cy,rightW,eh,-(int)face.tilt,(int)face.pupilX-shakeX,(int)face.pupilY-shakeY,blink,
-             angry,sad,stars,scared);
+  if(affection && !blink){
+    // Affection squint: expressive > < eyes.
+    display.drawLine(21,cy-8,43,cy,SSD1306_WHITE);
+    display.drawLine(43,cy,21,cy+8,SSD1306_WHITE);
+    display.drawLine(107,cy-8,85,cy,SSD1306_WHITE);
+    display.drawLine(85,cy,107,cy+8,SSD1306_WHITE);
+  } else {
+    drawOneEye(leftCx,cy,leftW,eh,(int)face.tilt,(int)face.pupilX+shakeX,(int)face.pupilY+shakeY,blink,
+               angry,sad,stars,scared);
+    drawOneEye(rightCx,cy,rightW,eh,-(int)face.tilt,(int)face.pupilX-shakeX,(int)face.pupilY-shakeY,blink,
+               angry,sad,stars,scared);
+  }
   if(requestedEmotion==AFFECTION){
-    // Soft dotted blush on the monochrome OLED.
-    const int blushY=48;
+    // Anime-style diagonal blush hatching on both cheeks.
     for(int side=0; side<2; ++side){
-      int bx = side==0 ? 12 : 102;
-      display.drawPixel(bx+3,blushY,SSD1306_WHITE);
-      display.drawPixel(bx+8,blushY-2,SSD1306_WHITE);
-      display.drawPixel(bx+13,blushY,SSD1306_WHITE);
-      display.drawPixel(bx+5,blushY+3,SSD1306_WHITE);
-      display.drawPixel(bx+11,blushY+3,SSD1306_WHITE);
+      int bx = side==0 ? 13 : 101;
+      int by = 48;
+      display.drawLine(bx,by+2,bx+3,by-3,SSD1306_WHITE);
+      display.drawLine(bx+6,by+3,bx+9,by-3,SSD1306_WHITE);
+      display.drawLine(bx+12,by+2,bx+15,by-3,SSD1306_WHITE);
     }
   }
   drawMouth(face.smile);
@@ -258,7 +304,7 @@ void triggerShakeReaction(){
   mood=max(0,mood-10);
   lastInteraction=now; sleeping=false; sleepSequence=false;
   shakeRecovery=true;
-  recoveryUntil=now+1100;
+  recoveryUntil=now+3000;
   shakeCooldown=now+2800;
   // Brief startled gaze; normal tilt tracking resumes after the reaction.
   gazeTargetX=0; gazeTargetY=-3;
@@ -321,23 +367,40 @@ void updateMotion(){
 void updateCharacter(){
   uint32_t now=millis();
   if(shakeRecovery && reached(now,recoveryUntil)){
-    // A deliberate emotional arc: startled -> angry -> sad -> calm.
-    // Each face morphs through the normal animation interpolation.
     if(recoveryStage==1){
       recoveryStage=2;
-      setEmotion(ANGRY);
-      recoveryUntil=now+1250;
-    } else if(recoveryStage==2){
-      recoveryStage=3;
-      setEmotion(SAD);
-      recoveryUntil=now+1900;
+      setEmotion(SURPRISED);
+      recoveryUntil=now+2000;
     } else {
       recoveryStage=0;
       shakeRecovery=false;
       setEmotion(NEUTRAL);
     }
   }
-  if(emotionUntil&&reached(now,emotionUntil)){emotionUntil=0;setEmotion(NEUTRAL);}
+  if(!shakeRecovery && emotionUntil&&reached(now,emotionUntil)){emotionUntil=0;setEmotion(NEUTRAL);}
+
+  // Sleep after 2 minutes of inactivity, or after lying on a side for 12 seconds.
+  if(!sleeping && !sleepSequence && !shakeRecovery && !emotionUntil){
+    if((sidePosition && sideSince && now-sideSince>=12000) ||
+       (lastInteraction && now-lastInteraction>=120000)){
+      sleepSequence=true;
+      sleepStageAt=now;
+      setEmotion(SLEEPY);
+    }
+  }
+  if(sleepSequence){
+    uint32_t elapsed=now-sleepStageAt;
+    if(elapsed<10000){
+      if((elapsed%2600)<850) blinkEnd=now+90;
+    } else if(elapsed<20000){
+      uint32_t phase=elapsed-10000;
+      if(phase<3500) face.eyeH=smooth(face.eyeH,18.0f,0.025f);
+      else if(phase<5200) face.eyeH=smooth(face.eyeH,31.0f,0.018f);
+      else face.eyeH=smooth(face.eyeH,3.0f,0.025f);
+    } else {
+      sleeping=true; sleepSequence=false; setEmotion(SLEEPY); face.eyeH=3;
+    }
+  }
 
   // Mood slowly drifts toward neutral, but interaction changes it immediately.
   if(now-lastMoodUpdate>12000){
@@ -364,7 +427,7 @@ void updateCharacter(){
     blinkEnd=now+110;
     nextBlink=now+random(2500,6500);
   }
-  if(mood>=80 && requestedEmotion==HAPPY && reached(now,nextHappyMouth)){
+  if(mood>=80 && (requestedEmotion==HAPPY || requestedEmotion==DELIGHTED) && reached(now,nextHappyMouth)){
     mouthStyle=random(1,4); nextHappyMouth=now+random(5000,12000);
   }
   if(!manualEmotion&&!shakeRecovery&&!emotionUntil&&reached(now,nextIdle)){
@@ -387,20 +450,16 @@ void updateCharacter(){
   }
 }
 
-void triggerAffection() {
-  uint32_t now = millis();
-  mood = min(100, mood + 20);
-  lastInteraction = now;
-  sleeping = false;
-  sleepSequence = false;
-  manualEmotion = false;
-  shakeRecovery = false;
-  recoveryStage = 0;
-  emotionUntil = 0;
-  setEmotion(AFFECTION, 3200);
-  mouthStyle = random(0, 2) ? 2 : 3;
-  nextIdle = now + 2200;
-  Serial.printf("Mochi: affection! mood=%d/100\\n", mood);
+void triggerAffection(){
+  uint32_t now=millis();
+  mood=min(100,mood+20);
+  lastInteraction=now;
+  sleeping=false; sleepSequence=false;
+  manualEmotion=false; shakeRecovery=false; recoveryStage=0; emotionUntil=0;
+  setEmotion(AFFECTION,3200);
+  mouthStyle=random(0,2)?2:3;
+  nextIdle=now+2200;
+  Serial.printf("Mochi: AFFECTION! mood=%d/100\n",mood);
 }
 
 void updateButton(){
@@ -413,7 +472,6 @@ void updateButton(){
   if(now - buttonChangedAt > 35 && readingHigh != buttonStableHigh){
     buttonStableHigh = readingHigh;
     if(!buttonStableHigh){
-      // Physical button triggers the same AFFECTION reaction as serial command 'p'.
       triggerAffection();
     }
   }
@@ -464,7 +522,7 @@ void setup(){
     Serial.println("OLED init failed; check SSD1306/address");while(true)delay(100);
   }
   display.clearDisplay();display.display();
-  initMPU();bootAt=millis();lastMoodUpdate=bootAt;
+  initMPU();bootAt=millis();lastMoodUpdate=bootAt;lastInteraction=bootAt;
   nextLook=millis()+1800;
   printHelp();
   Serial.println("Tilt controls gaze only; it does not select sad/happy emotions.");
